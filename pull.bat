@@ -14,13 +14,31 @@ set "baseDir=H:\youtube"
 set "tempDir=%baseDir%\temp"
 set "videosDir=%baseDir%\videos"
 
-REM Define the list of channel names
+REM Define the path to the channel list file
+set "channelFile=%~dp0channels.txt"
+
+REM Initialize the channel list variable
 set "channelList="
+
+REM Check if the channel file exists
+if not exist "%channelFile%" (
+    echo Channel list file not found: %channelFile%
+    exit /b 1
+)
+
+REM Read the channel names from the file and store them in channelList
+for /f "tokens=*" %%i in (%channelFile%) do (
+    set "channelList=!channelList! %%i"
+)
 
 REM Ensure the temp directory exists
 if not exist "%tempDir%" (
     echo Creating temp directory: %tempDir%
     mkdir "%tempDir%"
+)
+
+for /f "tokens=2-4 delims=/ " %%a in ('date /t') do (
+    set "currentDate=%%c-%%a-%%b"
 )
 
 REM Loop through each channel name in the list
@@ -56,7 +74,23 @@ for %%i in (%channelList%) do (
 
     REM Call yt-dlp with the specified settings for the current channel
     echo Downloading from https://www.youtube.com/@!channelName!/videos...
-    "%ytDlpPath%" --download-archive "!archiveFile!" --max-downloads 1 --format "bestvideo[height>=720]+bestaudio/best[height>=720]" --merge-output-format mp4 --output "!channelTempDir!\!channelName! - S01E!episodeNumberPadded! - %%(title)s.%%(ext)s" --playlist-items 1-10 https://www.youtube.com/@!channelName!/videos
+
+REM First, try to download combined video/audio streams
+echo Trying to download combined video/audio stream...
+"%ytDlpPath%" --download-archive "!archiveFile!" --max-downloads 1 --format "best[height>=720]/best" --merge-output-format mp4 --output "!channelTempDir!\!channelName! - S01E!episodeNumberPadded! - %%(title)s.%%(ext)s" --playlist-items 1-2 https://www.youtube.com/@!channelName!/videos > download_log.txt 2>&1
+
+REM Check if the download failed due to "Requested format is not available"
+findstr /C:"Requested format is not available" download_log.txt
+if errorlevel 1 (
+    echo Combined stream downloaded successfully!
+) else (
+    echo Combined stream not available. Downloading separate video and audio streams...
+
+    REM If combined stream is unavailable, fall back to separate video/audio streams
+    "%ytDlpPath%" --download-archive "!archiveFile!" --max-downloads 1 --format "bestvideo[height>=720]+bestaudio/best" --merge-output-format mp4 --output "!channelTempDir!\!channelName! - S01E!episodeNumberPadded! - %%(title)s.%%(ext)s" --playlist-items 1-2 https://www.youtube.com/@!channelName!/videos
+)
+
+
 
     REM Call the Python script to rename files
     echo Renaming files in !channelTempDir!...
@@ -66,7 +100,7 @@ for %%i in (%channelList%) do (
     for %%f in ("!channelTempDir!\*.mp4") do (
         set "videoFile=%%f"
         set "filename=%%~nxf"
-        
+
         REM Extract parts from filename using multiple delimiters
         for /f "tokens=1-3 delims=-" %%a in ("!filename!") do (
             set "seriesTitle=%%a"
@@ -77,24 +111,24 @@ for %%i in (%channelList%) do (
             set "seriesTitle=!seriesTitle: =!"
             set "seasonEpisode=!seasonEpisode: =!"
             set "episodeTitle=!episodeTitle:.mp4=!"
-            
+
             REM Extract season and episode number
             for /f "tokens=1,2 delims= " %%x in ("!seasonEpisode!") do (
                 set "season=%%x"
                 set "episode=%%y"
             )
-            
+
             REM Remove leading 'S' and 'E' from season and episode
             set "season=!season:S=!"
             set "episode=!episode:E=!"
 
             REM Set metadata
             echo Setting metadata for !videoFile!...
-            "%ffmpegPath%" -i "!videoFile!" -metadata title="!episodeTitle!" -metadata description="Episode !episode! of Season !season!" -metadata season_number=!season! -metadata episode_number=!episode! -codec copy "!channelTempDir!\temp_%%~nxf"
-            
+            "%ffmpegPath%" -i "!videoFile!" -metadata title="!episodeTitle!" -metadata date="%currentDate%" -metadata show="!channelName!" -metadata description="Episode !episode! of Season !season!" -metadata season_number=!season! -metadata episode_number=!episode! -codec copy "!channelTempDir!\temp_%%~nxf"
+
             REM Move the processed file to the channel directory
             move /Y "!channelTempDir!\temp_%%~nxf" "!outputDir!\%%~nxf"
-            
+
             REM Delete the original file
             del "!videoFile!"
         )
