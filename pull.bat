@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 REM Define the path to yt-dlp and ffmpeg executables
-set "ytDlpPath=%~dp0yt-dlp_x86.exe"
+set "ytDlpPath=%~dp0yt-dlp.exe"
 set "ffmpegPath=%~dp0ffmpeg.exe"
 
 REM Define the path to the Python executable and script
@@ -19,6 +19,7 @@ set "channelFile=%~dp0channels.txt"
 
 REM Initialize the channel list variable
 set "channelList="
+set "downloadCount=5"
 
 REM Check if the channel file exists
 if not exist "%channelFile%" (
@@ -42,24 +43,29 @@ for /f "tokens=2-4 delims=/ " %%a in ('date /t') do (
 )
 
 REM Loop through each channel name in the list
-for %%i in (%channelList%) do (
-    set "channelName=%%i"
+
+REM Read and process each line in channels.txt
+for /f "usebackq tokens=1,2 delims=:" %%A in ("%channelFile%") do (
+    set "channelName=%%A"
+    set "customURL=%%B"
+
+    REM If no custom URL, use default YouTube channel videos page
+    if "!customURL!"=="" (
+        set "channelURL=https://www.youtube.com/@!channelName!/videos"
+    ) else (
+        set "channelURL=!customURL!"
+    )
+
     set "channelDir=%videosDir%\!channelName!"
     set "outputDir=!channelDir!\Season 1"
     set "channelTempDir=%tempDir%\!channelName!"
     set "archiveFile=!channelTempDir!\downloaded.txt"
 
-    REM Ensure the channel temp directory and output directory exist, create them if they don't
-    if not exist "!channelTempDir!" (
-        echo Creating directory: !channelTempDir!
-        mkdir "!channelTempDir!"
-    )
-    if not exist "!outputDir!" (
-        echo Creating directory: !outputDir!
-        mkdir "!outputDir!"
-    )
+    REM Ensure necessary directories exist
+    if not exist "!channelTempDir!" mkdir "!channelTempDir!"
+    if not exist "!outputDir!" mkdir "!outputDir!"
 
-    REM Determine the next episode number by counting entries in the archive file
+    REM Determine next episode number
     if exist "!archiveFile!" (
         for /f "delims=" %%j in ('type "!archiveFile!" ^| find /c /v ""') do (
             set "episodeNumber=%%j"
@@ -68,29 +74,35 @@ for %%i in (%channelList%) do (
         set "episodeNumber=0"
     )
 
-    set /a "episodeNumber+=1"
-    set "episodeNumberPadded=000!episodeNumber!"
-    set "episodeNumberPadded=!episodeNumberPadded:~-3!"
 
-    REM Call yt-dlp with the specified settings for the current channel
-    echo Downloading from https://www.youtube.com/@!channelName!/videos...
+    REM Check if offset.txt exists and add its value to episodeNumber
+    set "offset=0"
+    if exist "!channelTempDir!\offset.txt" (
+        for /f "delims=" %%o in ('type "!channelTempDir!\offset.txt"') do (
+            set /a "offset=%%o"
+        )
+        set /a "episodeNumber+=offset"
+    )
 
-REM First, try to download combined video/audio streams
-echo Trying to download combined video/audio stream...
-"%ytDlpPath%" --download-archive "!archiveFile!" --max-downloads 1 --format "best[height>=720]/best" --merge-output-format mp4 --output "!channelTempDir!\!channelName! - S01E!episodeNumberPadded! - %%(title)s.%%(ext)s" --playlist-items 1-2 https://www.youtube.com/@!channelName!/videos > download_log.txt 2>&1
+    echo Downloading from !channelURL!...
 
-REM Check if the download failed due to "Requested format is not available"
-findstr /C:"Requested format is not available" download_log.txt
-if errorlevel 1 (
-    echo Combined stream downloaded successfully!
-) else (
-    echo Combined stream not available. Downloading separate video and audio streams...
+    rem --format "bestvideo[height>=720]+bestaudio/best" ^
+    REM Loop for downloadCount
+    for /L %%i in (1,1,%downloadCount%) do (
+        set /a "episodeNumber+=1"
+        set "episodeNumberPadded=000!episodeNumber!"
+        set "episodeNumberPadded=!episodeNumberPadded:~-3!"
 
-    REM If combined stream is unavailable, fall back to separate video/audio streams
-    "%ytDlpPath%" --download-archive "!archiveFile!" --max-downloads 1 --format "bestvideo[height>=720]+bestaudio/best" --merge-output-format mp4 --output "!channelTempDir!\!channelName! - S01E!episodeNumberPadded! - %%(title)s.%%(ext)s" --playlist-items 1-2 https://www.youtube.com/@!channelName!/videos
-)
-
-
+        "%ytDlpPath%" --ffmpeg-location "%ffmpegPath%" ^
+            --download-archive "!archiveFile!" ^
+            --max-downloads 1 ^
+            --format "bestvideo[height>=1080]+bestaudio/best" ^
+            --merge-output-format mp4 ^
+            --playlist-items 1-%downloadCount% ^
+            --playlist-reverse ^
+            --output "!channelTempDir!\!channelName! - S01E!episodeNumberPadded! - %%(title)s.%%(ext)s" ^
+            "!channelURL!"
+    )
 
     REM Call the Python script to rename files
     echo Renaming files in !channelTempDir!...
